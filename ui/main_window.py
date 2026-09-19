@@ -7,6 +7,8 @@ from PyQt6.QtGui import QIcon
 from core.camera_worker import CameraWorker
 from core.plant_detector import PlantDetector
 from core.valve_controller import ValveController, CentralStripDetector
+from core.detector_factory import DetectorFactory
+from config.settings import check_model_availability
 
 # Путь к файлу design.ui
 UI_FILE_PATH = Path(__file__).parent.parent / "design.ui"
@@ -25,8 +27,9 @@ class MainWindow(widgets.QMainWindow, Design):
         # Настройка UI
         self._setup_ui()
 
-        # Инициализация компонентов
-        self.detector = PlantDetector(index_type='exg', downscale_factor=0.5)
+        # Инициализация компонентов (будет создана фабрикой при выборе режима)
+        self.detector = None
+        self.current_mode = None
         self.valve_controller = ValveController(gpio_pin=7, valve_open_time=0.5, debug=True)
         self.strip_detector = CentralStripDetector(strip_height_percent=0.3, min_plant_area=2000)
 
@@ -106,9 +109,44 @@ class MainWindow(widgets.QMainWindow, Design):
         return super().eventFilter(obj, event)
 
     def on_green_green_click(self):
+        """Обработка клика на режим Green-on-Green"""
         print('Режим "green on green"')
+        
+        # Проверка доступности модели YOLO
+        if not check_model_availability():
+            QtWidgets.QMessageBox.warning(
+                self,
+                "Модель не найдена",
+                "Модель для детекции сорняков не найдена.\n"
+                "Пожалуйста, обучите модель используя ml/train_weed_detector.ipynb"
+            )
+            return
+        
+        # Инициализация детектора через фабрику
+        try:
+            from config.settings import WEED_MODEL_PATH
+            self.detector = DetectorFactory.create('green_on_green', model_path=str(WEED_MODEL_PATH))
+            self.current_mode = 'green_on_green'
+            
+            # Запуск видеорежима
+            self.stackedWidget.setCurrentWidget(self.loadingPage)
+            self.loading_movie.start()
+            self.start_initialization.emit()
+            
+        except Exception as e:
+            QtWidgets.QMessageBox.critical(
+                self,
+                "Ошибка инициализации",
+                f"Не удалось инициализировать режим Green-on-Green:\n{str(e)}"
+            )
+            print(f"Error initializing green_on_green mode: {e}")
 
     def on_green_brown_click(self):
+        """Обработка клика на стандартный режим (зелёное на коричневом)"""
+        # Инициализация стандартного детектора через фабрику
+        self.detector = DetectorFactory.create('standard')
+        self.current_mode = 'standard'
+        
         self.stackedWidget.setCurrentWidget(self.loadingPage)
         self.loading_movie.start()
         self.start_initialization.emit()
@@ -134,6 +172,7 @@ class MainWindow(widgets.QMainWindow, Design):
         self.reset_cursor_timer()
 
     def update_frame(self):
+        """Обновление кадра с учётом текущего режима"""
         if not hasattr(self, 'cap') or self.cap is None or not self.cap.isOpened():
             return
 
@@ -142,41 +181,78 @@ class MainWindow(widgets.QMainWindow, Design):
             return
 
         try:
-            original, index_map, bitmap, bboxes, plant_count = self.detector.process_frame(frame)
-
-            # Получаем все контуры для проверки полосы
-            _, _, _, s_contours, m_contours, l_contours = self._get_plant_contours(frame)
-            all_contours = s_contours + m_contours + l_contours
-
-            plants_in_strip, strip_center, strip_bounds, plants_list = \
-                self.strip_detector.check_plants_in_strip(all_contours, original.shape)
-
-            # Открываем клапан только для больших растений
-            large_plants = [p for p in plants_list if p['area'] > 2000]
-            if large_plants and not self.valve_controller.is_valve_open():
-                self.valve_controller.open_valve()
-
-            if strip_bounds:
-                strip_top, strip_bottom = strip_bounds
-                bboxes = self.strip_detector.draw_central_strip(
-                    bboxes, strip_top, strip_bottom, len(large_plants) > 0
-                )
-
-            self._update_label_batch([
-                (self.videoLabel1, original),
-                (self.videoLabel2, index_map),
-                (self.videoLabel3, bitmap),
-                (self.videoLabel4, bboxes)
-            ])
-
-            status = "ОТКРЫТ" if self.valve_controller.is_valve_open() else "ЗАКРЫТ"
-            print(f"Клапан: {status} | Больших растений: {len(large_plants)} | Всего: {plant_count}")
-
+            # Обработка в зависимости от режима
+            if self.current_mode == 'green_on_green':
+                self._update_frame_green_on_green(frame)
+            else:
+                self._update_frame_standard(frame)
+                
         except Exception as e:
             print(f"Ошибка обработки кадра: {e}")
             rgb_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
             for label in [self.videoLabel1, self.videoLabel2, self.videoLabel3, self.videoLabel4]:
                 self._update_label(label, rgb_frame)
+    
+    def _update_frame_standard(self, frame):
+        """Обработка кадра в стандартном режиме"""
+        original, index_map, bitmap, bboxes, plant_count = self.detector.process_frame(frame)
+
+        # Получаем все контуры для проверки полосы
+        _, _, _, s_contours, m_contours, l_contours = self._get_plant_contours(frame)
+        all_contours = s_contours + m_contours + l_contours
+
+        plants_in_strip, strip_center, strip_bounds, plants_list = \
+            self.strip_detector.check_plants_in_strip(all_contours, original.shape)
+
+        # Открываем клапан только для больших растений
+        large_plants = [p for p in plants_list if p['area'] > 2000]
+        if large_plants and not self.valve_controller.is_valve_open():
+            self.valve_controller.open_valve()
+
+        if strip_bounds:
+            strip_top, strip_bottom = strip_bounds
+            bboxes = self.strip_detector.draw_central_strip(
+                bboxes, strip_top, strip_bottom, len(large_plants) > 0
+            )
+
+        self._update_label_batch([
+            (self.videoLabel1, original),
+            (self.videoLabel2, index_map),
+            (self.videoLabel3, bitmap),
+            (self.videoLabel4, bboxes)
+        ])
+
+        status = "ОТКРЫТ" if self.valve_controller.is_valve_open() else "ЗАКРЫТ"
+        print(f"Клапан: {status} | Больших растений: {len(large_plants)} | Всего: {plant_count}")
+    
+    def _update_frame_green_on_green(self, frame):
+        """Обработка кадра в режиме Green-on-Green"""
+        # Детектор возвращает: (кадр с разметкой, кол-во сорняков, кол-во культур)
+        result_frame, weed_count, crop_count = self.detector.detect(frame)
+        
+        # Конвертируем из RGB в BGR если нужно (YOLO возвращает RGB)
+        if len(result_frame.shape) == 3 and result_frame.shape[2] == 3:
+            # Проверяем формат - если RGB, конвертируем в BGR для OpenCV
+            # Проверка по первому пикселю (в RGB зелёный канал должен быть ярче)
+            test_pixel = result_frame[0, 0]
+            if test_pixel[1] > test_pixel[0] and test_pixel[1] > test_pixel[2]:
+                # Скорее всего RGB, конвертируем
+                result_frame_bgr = cv2.cvtColor(result_frame, cv2.COLOR_RGB2BGR)
+            else:
+                result_frame_bgr = result_frame
+        else:
+            result_frame_bgr = result_frame
+        
+        # Для режима green_on_green показываем один итоговый кадр во всех окнах
+        # или можно распределить по окнам разную информацию
+        self._update_label_batch([
+            (self.videoLabel1, result_frame_bgr),      # Итоговый кадр с разметкой
+            (self.videoLabel2, result_frame_bgr),      # Дублируем (можно заменить на промежуточные данные)
+            (self.videoLabel3, result_frame_bgr),      # Дублируем
+            (self.videoLabel4, result_frame_bgr)       # Дублируем
+        ])
+        
+        print(f"Green-on-Green | Сорняки: {weed_count} | Культуры: {crop_count}")
 
     def _get_plant_contours(self, frame):
         import cv2
