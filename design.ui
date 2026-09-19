@@ -201,16 +201,16 @@
         <item>
          <layout class="QHBoxLayout" name="horizontalLayout_buttons">
           <property name="spacing">
-           <number>60</number>
+           <number>40</number>
           </property>
           <property name="leftMargin">
-           <number>80</number>
+           <number>40</number>
           </property>
           <property name="topMargin">
            <number>0</number>
           </property>
           <property name="rightMargin">
-           <number>80</number>
+           <number>40</number>
           </property>
           <property name="bottomMargin">
            <number>0</number>
@@ -219,13 +219,13 @@
            <widget class="QPushButton" name="btnGreenGreen">
             <property name="minimumSize">
              <size>
-              <width>400</width>
+              <width>300</width>
               <height>180</height>
              </size>
             </property>
             <property name="font">
              <font>
-              <pointsize>28</pointsize>
+              <pointsize>24</pointsize>
               <italic>false</italic>
               <bold>true</bold>
              </font>
@@ -252,13 +252,13 @@ QPushButton:hover {
            <widget class="QPushButton" name="btnGreenBrown">
             <property name="minimumSize">
              <size>
-              <width>400</width>
+              <width>300</width>
               <height>180</height>
              </size>
             </property>
             <property name="font">
              <font>
-              <pointsize>28</pointsize>
+              <pointsize>24</pointsize>
               <bold>true</bold>
              </font>
             </property>
@@ -277,6 +277,38 @@ QPushButton:hover {
             </property>
             <property name="text">
              <string>green on brown</string>
+            </property>
+           </widget>
+          </item>
+          <item>
+           <widget class="QPushButton" name="btnExpertMode">
+            <property name="minimumSize">
+             <size>
+              <width>300</width>
+              <height>180</height>
+             </size>
+            </property>
+            <property name="font">
+             <font>
+              <pointsize>24</pointsize>
+              <bold>true</bold>
+             </font>
+            </property>
+            <property name="styleSheet">
+             <string notr="true">QPushButton {
+    background-color: #9b59b6;
+    color: white;
+    border-radius: 10px;
+    border: 3px solid #8e44ad;
+    padding: 0px;
+}
+QPushButton:hover {
+    background-color: #8e44ad;
+    border: 3px solid #7d3c98;
+}</string>
+            </property>
+            <property name="text">
+             <string>Экспертный режим</string>
             </property>
            </widget>
           </item>
@@ -471,6 +503,79 @@ QPushButton:hover {
           </item>
          </layout>
         </widget>
+      <widget class="QWidget" name="expertPage">
+       <layout class="QVBoxLayout" name="verticalLayout_expert">
+        <property name="spacing">
+         <number>10</number>
+        </property>
+        <property name="leftMargin">
+         <number>10</number>
+        </property>
+        <property name="topMargin">
+         <number>10</number>
+        </property>
+        <property name="rightMargin">
+         <number>10</number>
+        </property>
+        <property name="bottomMargin">
+         <number>10</number>
+        </property>
+        <item>
+         <widget class="QLabel" name="expertTitle">
+          <property name="font">
+           <font>
+            <pointsize>20</pointsize>
+            <bold>true</bold>
+           </font>
+          </property>
+          <property name="text">
+           <string>Экспертный режим - Настройка Green on Brown</string>
+          </property>
+          <property name="alignment">
+           <set>Qt::AlignmentFlag::AlignCenter</set>
+          </property>
+         </widget>
+        </item>
+        <item>
+         <widget class="QScrollArea" name="scrollArea">
+          <property name="widgetResizable">
+           <bool>true</bool>
+          </property>
+          <widget class="QWidget" name="scrollAreaWidgetContents">
+           <property name="geometry">
+            <rect>
+             <x>0</x>
+             <y>0</y>
+             <width>980</width>
+             <height>400</height>
+            </rect>
+           </property>
+           <layout class="QVBoxLayout" name="verticalLayout_scroll">
+            <item>
+             <widget class="QLabel" name="expertVideoLabel">
+              <property name="minimumSize">
+               <size>
+                <width>640</width>
+                <height>480</height>
+               </size>
+              </property>
+              <property name="styleSheet">
+               <string notr="true">background-color: black;</string>
+              </property>
+              <property name="text">
+               <string/>
+              </property>
+              <property name="alignment">
+               <set>Qt::AlignmentFlag::AlignCenter</set>
+              </property>
+             </widget>
+            </item>
+           </layout>
+          </widget>
+         </widget>
+        </item>
+       </layout>
+      </widget>
      </widget>
     </item>
     <item>

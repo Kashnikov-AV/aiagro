@@ -85,6 +85,7 @@ class MainWindow(widgets.QMainWindow, Design):
         self.exitButton.clicked.connect(self.close)
         self.btnGreenGreen.clicked.connect(self.on_green_green_click)
         self.btnGreenBrown.clicked.connect(self.on_green_brown_click)
+        self.btnExpertMode.clicked.connect(self.on_expert_mode_click)
         self.btnBackToMenu.clicked.connect(self.stop_video_mode)
 
     def reset_cursor_timer(self):
@@ -151,6 +152,18 @@ class MainWindow(widgets.QMainWindow, Design):
         self.loading_movie.start()
         self.start_initialization.emit()
 
+    def on_expert_mode_click(self):
+        """Обработка клика на экспертный режим"""
+        print('Экспертный режим - Настройка Green on Brown')
+        
+        # Инициализация детектора для экспертного режима (аналогично standard)
+        self.detector = DetectorFactory.create('standard')
+        self.current_mode = 'expert'
+        
+        self.stackedWidget.setCurrentWidget(self.expertPage)
+        self.loading_movie.start()
+        self.start_initialization.emit()
+
     def on_camera_ready(self):
         self.cap = self.camera_worker.cap
         self.timer = QTimer()
@@ -184,6 +197,8 @@ class MainWindow(widgets.QMainWindow, Design):
             # Обработка в зависимости от режима
             if self.current_mode == 'green_on_green':
                 self._update_frame_green_on_green(frame)
+            elif self.current_mode == 'expert':
+                self._update_frame_expert(frame)
             else:
                 self._update_frame_standard(frame)
                 
@@ -192,6 +207,34 @@ class MainWindow(widgets.QMainWindow, Design):
             rgb_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
             for label in [self.videoLabel1, self.videoLabel2, self.videoLabel3, self.videoLabel4]:
                 self._update_label(label, rgb_frame)
+    
+    def _update_frame_expert(self, frame):
+        """Обработка кадра в экспертном режиме (аналогично standard, но вывод в один виджет)"""
+        original, index_map, bitmap, bboxes, plant_count = self.detector.process_frame(frame)
+
+        # Получаем все контуры для проверки полосы
+        _, _, _, s_contours, m_contours, l_contours = self._get_plant_contours(frame)
+        all_contours = s_contours + m_contours + l_contours
+
+        plants_in_strip, strip_center, strip_bounds, plants_list = \
+            self.strip_detector.check_plants_in_strip(all_contours, original.shape)
+
+        # Открываем клапан только для больших растений
+        large_plants = [p for p in plants_list if p['area'] > 2000]
+        if large_plants and not self.valve_controller.is_valve_open():
+            self.valve_controller.open_valve()
+
+        if strip_bounds:
+            strip_top, strip_bottom = strip_bounds
+            bboxes = self.strip_detector.draw_central_strip(
+                bboxes, strip_top, strip_bottom, len(large_plants) > 0
+            )
+
+        # В экспертном режиме показываем только итоговый кадр с разметкой
+        self._update_label(self.expertVideoLabel, bboxes)
+
+        status = "ОТКРЫТ" if self.valve_controller.is_valve_open() else "ЗАКРЫТ"
+        print(f"Экспертный режим | Клапан: {status} | Больших растений: {len(large_plants)} | Всего: {plant_count}")
     
     def _update_frame_standard(self, frame):
         """Обработка кадра в стандартном режиме"""
@@ -318,6 +361,7 @@ class MainWindow(widgets.QMainWindow, Design):
             )
             self.cap = None
 
+        # Возвращаемся в меню из любого режима
         self.stackedWidget.setCurrentWidget(self.menuPage)
         self.reset_cursor_timer()
 
