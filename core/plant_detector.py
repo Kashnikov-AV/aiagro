@@ -40,43 +40,38 @@ class PlantDetector:
             return 0.441 * R - 0.811 * G + 0.385 * B + 18.787
 
 
-    def apply_otsu(self, index):
-        """пороговая обработка"""
+    def apply_otsu(self, index, manual_threshold=None):
+        """Пороговая обработка. Если manual_threshold задан — используется он, иначе Оцу."""
         invert = self.index_type in ['exr', 'cive']
 
-        #нормализация
         index_min, index_max = index.min(), index.max()
+        # защита от деления на ноль, если картинка однородная
+        if index_max == index_min:
+            return np.zeros_like(index, dtype=np.uint8)
         index_norm = ((index - index_min) * 255 / (index_max - index_min)).astype(np.uint8)
 
-        # Оцу с предварительным вычислением гистограммы
-        hist = cv2.calcHist([index_norm], [0], None, [256], [0, 256])
-        hist = hist.flatten()
+        # --- ВЫБОР ПОРОГА ---
+        if manual_threshold is not None:
+            threshold = int(manual_threshold)
+        else:
+            # стандартный расчёт Оцу
+            hist = cv2.calcHist([index_norm], [0], None, [256], [0, 256]).flatten()
+            pixel_count = index_norm.size
+            mean_weight = np.cumsum(hist)
+            mean_intensity = np.cumsum(hist * np.arange(256))
 
-        # Ручная реализация Оцу
-        pixel_count = index_norm.size
-        mean_weight = np.cumsum(hist)
-        mean_intensity = np.cumsum(hist * np.arange(256))
-
-        if pixel_count == 0:
-            return index_norm
-
-        max_var, threshold = 0, 128
-
-        for t in range(1, 255):
-            w0, w1 = mean_weight[t], pixel_count - mean_weight[t]
-            if w0 == 0 or w1 == 0:
-                continue
-
-            m0 = mean_intensity[t] / w0
-            m1 = (mean_intensity[255] - mean_intensity[t]) / w1
-
-            var = w0 * w1 * (m0 - m1) ** 2
-
-            if var > max_var:
-                max_var, threshold = var, t
+            max_var, threshold = 0, 128
+            for t in range(1, 255):
+                w0, w1 = mean_weight[t], pixel_count - mean_weight[t]
+                if w0 == 0 or w1 == 0:
+                    continue
+                m0 = mean_intensity[t] / w0
+                m1 = (mean_intensity[255] - mean_intensity[t]) / w1
+                var = w0 * w1 * (m0 - m1) ** 2
+                if var > max_var:
+                    max_var, threshold = var, t
 
         binary = (index_norm > threshold).astype(np.uint8) * 255
-
         return cv2.bitwise_not(binary) if invert else binary
 
     def morph_processing(self, binary):

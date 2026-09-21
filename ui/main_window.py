@@ -192,7 +192,7 @@ class MainWindow(widgets.QMainWindow, Design):
             frame_small = original_rgb
 
         index = self.detector.calculate_index(frame_small)
-        binary = self.detector.apply_otsu(index)
+        binary = self.detector.apply_otsu(index, manual_threshold=128)
         bitmap = self.detector.morph_processing(binary)
 
         s_contours, m_contours, l_contours = self.detector.detect_plants(bitmap, frame_small.shape[:2])
