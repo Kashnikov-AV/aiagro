@@ -61,6 +61,8 @@ class PipelineContext:
     annotated: np.ndarray | None = None    # кадр с разметкой (RGB для Qt)
     result: dict = field(default_factory=dict)                # сводка/метрики
     stop: bool = False                     # досрочно завершить цепочку
+    crop_mask: np.ndarray | None = None    # маска культур (YOLO), full-res uint8
+    crops: list[dict] = field(default_factory=list)  # детекции культур YOLO
 
 
 class Stage(ABC):
@@ -140,17 +142,6 @@ class VideoPipeline:
 # --------------------------------------------------------------------------- #
 #  Встроенные шаги
 # --------------------------------------------------------------------------- #
-class ToFloatRGBStage(Stage):
-    """BGR uint8 -> RGB float32 (нормированные каналы для индексов)."""
-    name = "to_rgb"
-
-    def process(self, ctx):
-        rgb = cv2.cvtColor(ctx.frame, cv2.COLOR_BGR2RGB).astype(np.float32)
-        ctx.small = rgb
-        ctx.scale = 1.0
-        return ctx
-
-
 class DownscaleStage(Stage):
     def __init__(self, factor: float = 0.5):
         self.factor = factor
@@ -209,11 +200,15 @@ class OtsuThresholdStage(Stage):
         norm = np.zeros_like(idx, dtype=np.uint8) if hi == lo else \
             ((idx - lo) * 255 / (hi - lo)).astype(np.uint8)
         _, binary = cv2.threshold(norm, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
-        invert = self.invert
-        if invert is None:
-            invert = False
-        if invert:
+        if self.invert:
             binary = cv2.bitwise_not(binary)
+        # маска культур (YOLO): зелёное внутри культур не считается сорняком
+        if ctx.crop_mask is not None:
+            cmask = ctx.crop_mask
+            if cmask.shape[:2] != binary.shape[:2]:
+                cmask = cv2.resize(cmask, (binary.shape[1], binary.shape[0]),
+                                   interpolation=cv2.INTER_NEAREST)
+            binary = cv2.bitwise_and(binary, cv2.bitwise_not(cmask))
         ctx.binary = binary
         return ctx
 
@@ -323,10 +318,16 @@ class StopLineROIStage(Stage):
 
 
 class DrawStage(Stage):
-    """Отрисовка рамок, зоны интереса и счётчика. Результат — RGB (для QImage)."""
+    """Отрисовка рамок, зоны интереса и счётчика. Результат — RGB (для QImage).
+
+    В GOG-режиме: растения из ctx.plants с флагом label="weed" рисуются жёлтым
+    с подписью "weed"; ctx.crops — фиолетовым с подписью "crop".
+    """
     name = "draw"
 
     COLORS = {"s": (0, 200, 0), "m": (255, 128, 0), "l": (0, 0, 255)}
+    WEED_COLOR = (255, 215, 0)   # жёлтый (RGB)
+    CROP_COLOR = (160, 32, 240)  # фиолетовый (RGB)
 
     def __init__(self, draw_original: bool = True):
         self.draw_original = draw_original
@@ -337,8 +338,19 @@ class DrawStage(Stage):
         out = base.copy()
         for p in ctx.plants:
             x, y, w, h = p["bbox"]
-            color = self.COLORS[p["size"]]
-            cv2.rectangle(out, (x, y), (x + w, y + h), color, 2)
+            if p.get("label") == "weed":
+                color = self.WEED_COLOR
+                cv2.rectangle(out, (x, y), (x + w, y + h), color, 2)
+                cv2.putText(out, "weed", (x, max(y - 6, 12)),
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.6, color, 2)
+            else:
+                color = self.COLORS[p["size"]]
+                cv2.rectangle(out, (x, y), (x + w, y + h), color, 2)
+        for c in ctx.crops:
+            x, y, w, h = c["bbox"]
+            cv2.rectangle(out, (x, y), (x + w, y + h), self.CROP_COLOR, 2)
+            cv2.putText(out, "crop", (x, max(y - 6, 12)),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.6, self.CROP_COLOR, 2)
         bounds = ctx.result.get("strip_bounds")
         if bounds:
             top, bottom = bounds
@@ -440,6 +452,143 @@ class BitmapViewStage(Stage):
 
 
 # --------------------------------------------------------------------------- #
+#  Шаги GOG: YOLO-культуры -> GOB-пайплайн вне культур -> сорняки
+# --------------------------------------------------------------------------- #
+class YoloCropStage(Stage):
+    """Этап 1 (GOG): детекция культурных растений обученной YOLO-моделью.
+
+    Модель ищется в папке models/ (см. models/README.md). Приоритет весов:
+      crop_yolo-seg.pt / crop_yolo.pt / crop_yolo.onnx / best.pt — кастомная
+      модель, дообученная на ваши культуры (-seg даёт точную сегментную маску);
+      yolov8n-seg.pt — предобученная COCO-сегментация, классы "potted plant"
+      (id 39) / "tree" (id 16), как базовый вариант для отладки конвейера.
+
+    Результаты:
+      ctx.crops      — список {"bbox", "conf", "cls_name"} в координатах кадра;
+      ctx.crop_mask  — uint8-маска культур (full-res): из сегментной маски,
+                       либо из bounding box'ов (эллипс, ближе к форме растения).
+
+    Если модели/ultralytics нет — шаг пропускается (запись в result["yolo"]),
+    пайплайн деградирует до обработки всего кадра, приложение не падает.
+    """
+    name = "yolo_crop"
+
+    def __init__(self, weights=None, conf: float = 0.25, iou: float = 0.45,
+                 classes: list[int] | None = None, imgsz: int = 640,
+                 skip_frame: int = 1):
+        """classes=None -> автоопределение по именам классов модели
+        (plant / potted plant / tree / crop / weed-free и т.п.).
+        skip_frame — прогонять детекцию каждый N-й кадр (маску переиспользовать),
+        чтобы экономить FPS на слабом железе (Raspberry Pi)."""
+        from core.yolo_detector import MODEL_DIR
+        found = self._find_weights()
+        self.weights = weights or (found[0] if found else MODEL_DIR / "yolov8n-seg.pt")
+        self.conf, self.iou, self.imgsz = conf, iou, imgsz
+        self.classes = classes
+        self.skip_frame = max(1, skip_frame)
+        self._last_mask: np.ndarray | None = None
+        self._last_crops: list[dict] = []
+        self._counter = 0
+
+    @staticmethod
+    def _find_weights() -> list:
+        from core.yolo_detector import MODEL_DIR
+        order = ["crop_yolo-seg.pt", "crop_yolo.pt", "crop_yolo.onnx",
+                 "best.pt", "yolov8n-seg.pt", "yolov8n.pt"]
+        return [MODEL_DIR / n for n in order if (MODEL_DIR / n).exists()]
+
+    # имена классов, которые считаем «культурой» (COCO + кастомные датасеты)
+    CROP_CLASS_NAMES = {"plant", "potted plant", "tree", "crop", "culture",
+                        "sapling", "broccoli", "cauliflower", "corn",
+                        "cabbage", "lettuce"}
+
+    def process(self, ctx):
+        from core.yolo_detector import YoloModel
+        model = YoloModel.get(self.weights)
+        h, w = ctx.frame.shape[:2]
+        if not model.is_available():
+            ctx.result["yolo"] = f"недоступна: {model.error}"
+            return ctx
+
+        self._counter += 1
+        if self._counter % self.skip_frame == 1 or self._last_mask is None:
+            results = model.predict(ctx.frame, conf=self.conf, iou=self.iou,
+                                    classes=self.classes, imgsz=self.imgsz)
+            crops, mask = [], np.zeros((h, w), np.uint8)
+            for r in results:
+                names = r.names
+                boxes = r.boxes.cpu().numpy() if r.boxes is not None else None
+                masks = getattr(r, "masks", None)
+                has_segm = masks is not None and masks.data is not None \
+                    and len(masks.data) > 0
+                if boxes is None or len(boxes) == 0:
+                    continue
+                # классы-культуры по именам (для COCO: potted plant/tree/plant;
+                # для кастомной модели — её собственные имена, напр. "crop")
+                crop_ids = {i for i, n in names.items()
+                            if str(n).lower() in self.CROP_CLASS_NAMES} \
+                    if self.classes is None else None
+                for i in range(len(boxes)):
+                    cls_id = int(boxes.cls[i])
+                    cls_name = str(names.get(cls_id, cls_id))
+                    if crop_ids is not None and cls_id not in crop_ids:
+                        continue
+                    x1, y1, x2, y2 = boxes.xyxy[i].astype(int)
+                    x1, y1 = max(x1, 0), max(y1, 0)
+                    x2, y2 = min(x2, w), min(y2, h)
+                    crops.append({"bbox": (x1, y1, x2 - x1, y2 - y1),
+                                  "conf": float(boxes.conf[i]),
+                                  "cls_name": cls_name})
+                    added = False
+                    if has_segm and i < len(masks.data):
+                        m = masks.data[i].cpu().numpy()  # HxW float 0..1
+                        m = cv2.resize(m, (w, h), interpolation=cv2.INTER_NEAREST)
+                        sel = m > 0.5
+                        if sel.sum() > 0:
+                            mask[sel] = 255
+                            added = True
+                    if not added:  # det-модель или пустая маска -> эллипс по box
+                        cx, cy = (x1 + x2) // 2, (y1 + y2) // 2
+                        axes = ((x2 - x1) // 2, (y2 - y1) // 2)
+                        if axes[0] > 0 and axes[1] > 0:
+                            cv2.ellipse(mask, (cx, cy), axes, 0, 0, 360, 255, -1)
+            # небольшое расширение маски, чтобы срезать «ободок» культуры
+            kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (9, 9))
+            mask = cv2.dilate(mask, kernel, iterations=1)
+            self._last_mask, self._last_crops = mask, crops
+
+        ctx.crop_mask = self._last_mask
+        ctx.crops = self._last_crops
+        ctx.result["crops"] = len(self._last_crops)
+        ctx.result["yolo"] = "ok"
+        return ctx
+
+
+class WeedLabelStage(Stage):
+    """Этап 4 (GOG): всё зелёное, найденное вне масок культур — сорняк.
+
+    Помечает растения label="weed"; опционально отбрасывает слишком мелкие
+    блобы (шум) и пересчитывает статистику в ctx.result.
+    """
+    name = "weed_label"
+
+    def __init__(self, min_area: float = 300):
+        self.min_area = min_area
+
+    def process(self, ctx):
+        weeds = []
+        for p in ctx.plants:
+            if p["area"] >= self.min_area:
+                p["label"] = "weed"
+                weeds.append(p)
+        ctx.plants = weeds
+        ctx.result["weeds"] = len(weeds)
+        ctx.result["total"] = len(weeds)
+        ctx.result["counts"] = {"s": 0, "m": 0, "l": 0}
+        return ctx
+
+
+# --------------------------------------------------------------------------- #
 #  Готовые конфигурации режимов
 # --------------------------------------------------------------------------- #
 def build_gob_pipeline(valve_controller=None, index_type: str = "exg",
@@ -467,18 +616,32 @@ def build_gob_pipeline(valve_controller=None, index_type: str = "exg",
 
 
 def build_gog_pipeline(index_type: str = "exg", downscale: float = 0.5,
-                       x_ratio: float = 0.5) -> VideoPipeline:
-    """Green-on-Green: оба фона зелёные — индекс работает хуже, поэтому
-    упор на геометрию: контуры -> линия останова между камерами.
-    Отличается от GOB отсутствием клапана/визуализаций индекса и своей ROI."""
-    stages: list[Stage] = [
+                       x_ratio: float | None = None,
+                       use_yolo: bool = True, weights=None,
+                       weed_min_area: float = 300) -> VideoPipeline:
+    """Green-on-Green: YOLO находит культуры -> обратная маска -> всё зелёное
+    вне культур обрабатывается GOB-конвейером (ExG -> Otsu -> морфология ->
+    контуры) и помечается как сорняк (жёлтая рамка "weed"); культуры —
+    фиолетовая рамка "crop".
+
+    Опционально `roi_stipline` (линия останова) включается передачей x_ratio.
+    Если ultralytics/веса недоступны — этап yolo_crop безопасно пропускается
+    и пайплайн работает как раньше (весь кадр = потенциальные сорняки).
+    """
+    stages: list[Stage] = []
+    if use_yolo:
+        stages.append(YoloCropStage(weights=weights))
+    stages += [
         DownscaleStage(downscale),
         VegetationIndexStage(index_type),
         OtsuThresholdStage(invert=index_type in ("exr", "cive")),
         MorphologyStage(kernel_size=5),
+        BitmapViewStage(),
         ContourStage(min_area_factor=0.0003),
         SizeClassifyStage(),
-        StopLineROIStage(x_ratio=x_ratio),
-        DrawStage(),
+        WeedLabelStage(min_area=weed_min_area),
     ]
+    if x_ratio is not None:
+        stages.append(StopLineROIStage(x_ratio=x_ratio))
+    stages.append(DrawStage())
     return VideoPipeline(stages, name="gog")
