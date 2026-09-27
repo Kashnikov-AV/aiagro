@@ -15,21 +15,82 @@ AIagro - это приложение для обнаружения растен�
 
 ```
 aiagro/
-├── main.py              # Точка входа приложения
-├── core/                # Основные модули
+├── main.py                 # Точка входа приложения
+├── test_pipeline.py        # Тесты конвейеров GOB/GOG (pytest)
+├── core/                   # Основные модули
 │   ├── __init__.py
-│   ├── camera_worker.py    # Работа с камерой (фоновый поток)
-│   ├── plant_detector.py   # Детекция растений
-│   └── valve_controller.py # Управление электроклапанами
-├── ui/                  # Интерфейс пользователя
+│   ├── pipeline.py         # Конвейер обработки кадра (стадии, режимы GOB/GOG)
+│   ├── camera_stream.py    # Поток захвата видео (QThread) + запуск пайплайна
+│   ├── camera_worker.py    # Инициализация камеры в фоновом потоке
+│   ├── plant_detector.py   # Детекция растений по цветовым индексам
+│   ├── yolo_detector.py    # Ленивая потокобезопасная загрузка YOLO-модели
+│   └── valve_controller.py # Управление электроклапанами (GPIO / отладка)
+├── ui/                     # Интерфейс пользователя
 │   ├── __init__.py
 │   └── main_window.py      # Главное окно приложения
-├── icons/               # Иконки и ресурсы
+├── icons/                  # Иконки и ресурсы
 │   ├── loading.gif
 │   └── reject.png
-├── design.ui            # UI дизайн (Qt Designer)
-└── README.md            # Документация
+├── models/                 # Веса YOLO-моделей (в git не коммитятся)
+│   └── README.md           # Инструкция, где взять веса моделей
+├── aiagro.iml              # Модуль проекта JetBrains IDE (PyCharm)
+├── .gitignore              # Список игнорируемых файлов для git
+├── design.ui               # UI дизайн (Qt Designer)
+└── README.md               # Документация
 ```
+
+## Описание файлов проекта
+
+### Корневые файлы
+
+| Файл | Назначение |
+|---|---|
+| `main.py` | Точка входа: создаёт `QApplication` (стиль Fusion), создаёт и показывает `MainWindow` из `ui/main_window.py`. |
+| `test_pipeline.py` | Тесты конвейеров GOB/GOG (`core/pipeline.py`): собирают синтетический кадр (зелёные «растения» на коричневом фоне) и проверяют работу `build_gob_pipeline` / `build_gog_pipeline`, маркировку сорняков. Запуск: `pytest test_pipeline.py`. |
+| `design.ui` | Форма главного окна, созданная в Qt Designer; загружается через `uic.loadUiType` в `ui/main_window.py`. |
+| `aiagro.iml` | Файл модуля IntelliJ/PyCharm (Python SDK проекта, исключение `.venv`). Генерируется IDE. |
+| `.gitignore` | См. раздел «Файл .gitignore» ниже. |
+| `README.md` | Основная документация проекта (этот файл). |
+
+### Каталог `core/` — основные модули
+
+| Файл | Назначение |
+|---|---|
+| `__init__.py` | Маркер пакета Python (пустой). |
+| `pipeline.py` | Архитектура конвейера видеопотока: кадр проходит цепочку независимых стадий (Downscale → VegetationIndex → OtsuThreshold → Morphology → DetectContours → Classify → ROI/StopLine → DrawOverlays → Actuator). Режимы **GOB** (полив клапаном по центральной полосе) и **GOG** (распознавание культур/сорняков с YOLO и линией останова) отличаются только набором стадий. |
+| `camera_stream.py` | `CameraStream` — независимый `QThread` захвата видео с одной камеры: читает кадры, конвертирует в `QImage`, прогоняет через пайплайн, передаёт в GUI сигналами `frame_ready` / `result_ready` / `error_occurred`. |
+| `camera_worker.py` | `CameraWorker` — инициализация и проверка работоспособности камеры (`cv2.VideoCapture`) в фоновом потоке с сигналами успеха/ошибки. |
+| `plant_detector.py` | `PlantDetector` — детекция растений по цветовым индексам (ExG, ExR, ExGR, CIVE) с бинаризацией Otsu, морфологией, поиском контуров и классификацией по размеру. |
+| `yolo_detector.py` | `YoloModel` — ленивая потокобезопасная (через `Lock`) singleton-загрузка весов Ultralytics YOLO из каталога `models/`. Если модели нет — `is_available()` возвращает `False`, и GOG-режим деградирует до обработки без YOLO без падения приложения. |
+| `valve_controller.py` | `ValveController` — управление электромагнитным клапаном полива через `OPi.GPIO` (Orange Pi PC PC2, pin 7): автозакрытие по таймауту, потокобезопасность, режим `debug=True` без реального GPIO. Также содержит `CentralStripDetector`. |
+
+### Каталог `ui/` — интерфейс пользователя
+
+| Файл | Назначение |
+|---|---|
+| `__init__.py` | Маркер пакета Python (пустой). |
+| `main_window.py` | `MainWindow` — главное окно приложения: загружает `design.ui`, подключает `CameraWorker`, `CameraStream` (GOG-пайплайн), `PlantDetector` и `ValveController`, выводит видеопотоки и виджеты результатов. |
+
+### Каталог `icons/` — графические ресурсы
+
+| Файл | Назначение |
+|---|---|
+| `loading.gif` | Анимация загрузки, отображаемая при инициализации камеры. |
+| `reject.png` | Иконка ошибки/отказа (например, недоступной камеры). |
+
+### Каталог `models/` — веса детектора культур
+
+| Файл | Назначение |
+|---|---|
+| `README.md` | Инструкция по получению весов: `YoloCropStage` ищет модели в приоритете `crop_yolo.pt` → `crop_yolo.onnx` → `best.pt` → `yolov8n.pt`; описан цикл обучения своей сегментационной модели в Ultralytics. Сами файлы `*.pt` / `*.onnx` в git не коммитятся. |
+
+## Файл .gitignore
+
+В репозитории настроен `.gitignore`, который исключает из версионирования:
+
+- **Кэш Python** — `__pycache__/`, `*.pyc`
+- **Файлы окружения** — `.env`, `.env.local`, `.env.*` (секреты и локальные настройки)
+- **Веса моделей** — `models/*.pt`, `models/*.onnx` (скачиваются отдельно, см. `models/README.md`)
 
 ## Требования
 
