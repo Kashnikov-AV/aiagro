@@ -18,11 +18,18 @@ class CameraStream(QThread):
 
     frame_ready = pyqtSignal(QImage)
     error_occurred = pyqtSignal(str)
+    result_ready = pyqtSignal(dict)  # сводка от pipeline (total, in_roi, ...)
 
-    def __init__(self, camera_index: int, fps_limit: float = 30.0, parent=None):
+    def __init__(self, camera_index: int, fps_limit: float = 30.0,
+                 pipeline=None, display_key: str | None = None, parent=None):
+        """pipeline — VideoPipeline из core.pipeline или None (чистый поток).
+        display_key — ключ ctx.result с доп. изображением для frame_ready;
+        по умолчанию используется ctx.annotated."""
         super().__init__(parent)
         self.camera_index = camera_index
         self.frame_interval = 1.0 / fps_limit if fps_limit > 0 else 0.0
+        self.pipeline = pipeline
+        self.display_key = display_key
         self._running = False
         self._cap = None
 
@@ -51,7 +58,24 @@ class CameraStream(QThread):
                     self.error_occurred.emit(f"Поток камеры {self.camera_index} прерван")
                 break
 
-            image = self._to_qimage(frame)
+            if self.pipeline is not None:
+                ctx = self.pipeline.run(frame)
+                # что показывать: доп. изображение из result или аннотированный кадр
+                img_rgb = None
+                if self.display_key and ctx.result.get(self.display_key) is not None:
+                    img_rgb = ctx.result[self.display_key]
+                elif ctx.annotated is not None:
+                    img_rgb = ctx.annotated
+                if img_rgb is not None:
+                    image = self._ndarray_to_qimage(img_rgb)
+                else:
+                    image = self._to_qimage(frame)
+                if self._running:
+                    self.result_ready.emit({k: v for k, v in ctx.result.items()
+                                            if not isinstance(v, np.ndarray)})
+            else:
+                image = self._to_qimage(frame)
+
             if image is not None and self._running:
                 self.frame_ready.emit(image)
 
@@ -59,6 +83,12 @@ class CameraStream(QThread):
                 self.msleep(int(self.frame_interval * 1000))
 
         self._release()
+
+    @staticmethod
+    def _ndarray_to_qimage(rgb):
+        h, w, ch = rgb.shape
+        return QImage(rgb.data, w, h, ch * w,
+                      QImage.Format.Format_RGB888).copy()
 
     @staticmethod
     def _to_qimage(frame_bgr):

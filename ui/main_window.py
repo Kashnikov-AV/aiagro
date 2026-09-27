@@ -7,6 +7,7 @@ from PyQt6.QtGui import QIcon
 from core.camera_worker import CameraWorker
 from core.camera_stream import CameraStream
 from core.plant_detector import PlantDetector
+from core.pipeline import build_gog_pipeline
 from core.valve_controller import ValveController, CentralStripDetector
 
 # Путь к файлу design.ui
@@ -107,7 +108,13 @@ class MainWindow(widgets.QMainWindow, Design):
         return super().eventFilter(obj, event)
 
     def on_green_green_click(self):
-        """Режим 'green on green': 2 независимых потока, по одному на виджет."""
+        """Режим 'green on green': 2 независимых потока, по одному на виджет.
+
+        Каждый поток прогоняет кадры через GOG-пайплайн (core.pipeline).
+        Состав пайплайна можно менять без правок этого метода, например:
+            pipeline.replace('roi_stipline', CentralStripROIStage())
+            pipeline.add(HsvGreenStage(), before='otsu')
+        """
         self._dual_streams = []
         targets = [
             (0, self.videoLabelCam1),
@@ -115,12 +122,16 @@ class MainWindow(widgets.QMainWindow, Design):
         ]
         for cam_index, label in targets:
             label.setText("Подключение...")
-            stream = CameraStream(cam_index, fps_limit=30.0, parent=self)
+            pipeline = build_gog_pipeline()
+            stream = CameraStream(cam_index, fps_limit=30.0,
+                                  pipeline=pipeline, parent=self)
             # lambda фиксирует свою метку — виджеты не пересекаются
             stream.frame_ready.connect(
                 lambda image, lbl=label: self._show_dual_frame(lbl, image))
             stream.error_occurred.connect(
                 lambda msg, lbl=label: self._show_camera_error(lbl, msg))
+            stream.result_ready.connect(
+                lambda res, idx=cam_index: print(f"[GOG cam {idx}] {res}"))
             stream.start()
             self._dual_streams.append(stream)
 
