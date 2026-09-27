@@ -35,6 +35,7 @@ aiagro/
 │   └── README.md           # Инструкция, где взять веса моделей
 ├── aiagro.iml              # Модуль проекта JetBrains IDE (PyCharm)
 ├── .gitignore              # Список игнорируемых файлов для git
+├── .qwenignore             # Список игнорируемых файлов для Qwen-инструментов
 ├── design.ui               # UI дизайн (Qt Designer)
 └── README.md               # Документация
 ```
@@ -50,6 +51,7 @@ aiagro/
 | `design.ui` | Форма главного окна, созданная в Qt Designer; загружается через `uic.loadUiType` в `ui/main_window.py`. |
 | `aiagro.iml` | Файл модуля IntelliJ/PyCharm (Python SDK проекта, исключение `.venv`). Генерируется IDE. |
 | `.gitignore` | См. раздел «Файл .gitignore» ниже. |
+| `.qwenignore` | Список игнорируемых файлов для Qwen-инструментов (тот же синтаксис, что у `.gitignore`). Содержит одну запись — `.gitignore`, то есть сам файл правил git исключён из анализа этими инструментами. |
 | `README.md` | Основная документация проекта (этот файл). |
 
 ### Каталог `core/` — основные модули
