@@ -127,7 +127,9 @@ class VideoPipeline:
         ctx = PipelineContext(frame=frame_bgr)
         for stage in self._stages:
             try:
-                ctx = stage.process(ctx)
+                result = stage.process(ctx)
+                if result is not None:  # FunctionStage может вернуть None
+                    ctx = result
             except Exception as e:  # шаг не должен ронять приложение
                 print(f"[{self.name}] stage '{stage.name}' error: {e}")
             if ctx.stop:
