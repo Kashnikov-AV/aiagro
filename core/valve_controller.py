@@ -1,69 +1,121 @@
+import ctypes
+import ctypes.util
 import time
 import threading
+import cv2
+import numpy as np
+
+# ---------- Загрузка libwiringPi.so ----------
+def _load_wiringpi():
+    candidates = [
+        ctypes.util.find_library("wiringPi"),
+        "/usr/local/lib/libwiringPi.so",
+        "/usr/lib/libwiringPi.so",
+    ]
+    for path in candidates:
+        if path:
+            try:
+                return ctypes.CDLL(path)
+            except OSError:
+                continue
+    raise RuntimeError(
+        "Не найдена libwiringPi.so. Установите WiringOP: "
+        "cd ~/wiringOP && sudo ./build && sudo ldconfig"
+    )
+
+
+lib = _load_wiringpi()
+
+# ---------- Прототипы функций ----------
+lib.wiringPiSetup.restype     = ctypes.c_int
+lib.wiringPiSetupGpio.restype = ctypes.c_int
+lib.wiringPiSetupPhys.restype = ctypes.c_int
+
+lib.pinMode.argtypes     = [ctypes.c_int, ctypes.c_int]
+lib.pinMode.restype      = None
+
+lib.digitalWrite.argtypes = [ctypes.c_int, ctypes.c_int]
+lib.digitalWrite.restype  = None
+
+lib.digitalRead.argtypes = [ctypes.c_int]
+lib.digitalRead.restype  = ctypes.c_int
+
+
+# ---------- Константы ----------
+INPUT  = 0
+OUTPUT = 1
+LOW    = 0
+HIGH   = 1
 
 
 class ValveController:
-    def __init__(self, gpio_pin=7, valve_open_time=0.5, debug=False):
+    def __init__(self, gpio_pin, valve_open_time=0.5, debug=False, pin_mode="wpi"):
+        """
+        :param gpio_pin:        номер пина
+        :param valve_open_time: время открытия клапана, сек
+        :param debug:           если True — не трогаем GPIO, только печатаем
+        :param pin_mode:        'wpi' | 'gpio' | 'phys'
+        """
         self.gpio_pin = gpio_pin
         self.valve_open_time = valve_open_time
         self.debug = debug
         self.valve_open = False
         self.valve_lock = threading.Lock()
+        self.gpio_ready = False
 
         if not debug:
             try:
-                import OPi.GPIO as GPIO
-                GPIO.setboard(GPIO.PCPC2)
-                GPIO.setmode(GPIO.BOARD)
-                GPIO.setup(self.gpio_pin, GPIO.OUT)
-                GPIO.output(self.gpio_pin, GPIO.HIGH)
-                self.gpio = GPIO
-                print(f"GPIO {gpio_pin} инициализирован")
+                if pin_mode == "wpi":
+                    rc = lib.wiringPiSetup()
+                elif pin_mode == "gpio":
+                    rc = lib.wiringPiSetupGpio()
+                elif pin_mode == "phys":
+                    rc = lib.wiringPiSetupPhys()
+                else:
+                    raise ValueError(f"Неизвестный pin_mode: {pin_mode}")
+
+                if rc == -1:
+                    raise RuntimeError(f"wiringPiSetup({pin_mode}) вернул -1")
+
+                lib.pinMode(self.gpio_pin, OUTPUT)
+                lib.digitalWrite(self.gpio_pin, HIGH)   # закрыто
+                self.gpio_ready = True
+                print(f"GPIO {gpio_pin} ({pin_mode}) инициализирован")
             except Exception as e:
                 print(f"Ошибка GPIO: {e}")
-                self.gpio = None
         else:
             print("Режим отладки")
-            self.gpio = None
 
     def open_valve(self):
         with self.valve_lock:
             if self.valve_open:
                 return
-
             self.valve_open = True
 
-            if self.debug:
-                print(f"КЛАПАН ОТКРЫТ на {self.valve_open_time} сек")
-            else:
-                if self.gpio:
-                    self.gpio.output(self.gpio_pin, self.gpio.LOW)
-                    print(f"КЛАПАН ОТКРЫТ на {self.valve_open_time} сек")
+            if self.gpio_ready:
+                lib.digitalWrite(self.gpio_pin, LOW)
+            print(f"КЛАПАН ОТКРЫТ на {self.valve_open_time} сек")
 
-            timer_thread = threading.Thread(target=self._close_after_delay)
-            timer_thread.daemon = True
-            timer_thread.start()
+            t = threading.Thread(target=self._close_after_delay)
+            t.daemon = True
+            t.start()
 
     def _close_after_delay(self):
         time.sleep(self.valve_open_time)
 
         with self.valve_lock:
             self.valve_open = False
-
-            if self.debug:
-                print("КЛАПАН ЗАКРЫТ")
-            else:
-                if self.gpio:
-                    self.gpio.output(self.gpio_pin, self.gpio.HIGH)
-                    print("КЛАПАН ЗАКРЫТ")
+            if self.gpio_ready:
+                lib.digitalWrite(self.gpio_pin, HIGH)
+            print("КЛАПАН ЗАКРЫТ")
 
     def is_valve_open(self):
         return self.valve_open
 
     def cleanup(self):
-        if self.gpio:
-            self.gpio.output(self.gpio_pin, self.gpio.HIGH)
-            self.gpio.cleanup()
+        if self.gpio_ready:
+            lib.digitalWrite(self.gpio_pin, HIGH)
+            lib.pinMode(self.gpio_pin, INPUT)
 
 
 class CentralStripDetector:
@@ -74,9 +126,6 @@ class CentralStripDetector:
     def check_plants_in_strip(self, plants_contours, frame_shape):
         if not plants_contours:
             return False, None, None, []
-
-        import cv2
-        import numpy as np
 
         h, w = frame_shape[:2]
 
@@ -110,7 +159,6 @@ class CentralStripDetector:
         return len(plants_in_strip) > 0, strip_center, (strip_top, strip_bottom), plants_in_strip
 
     def draw_central_strip(self, frame, strip_top, strip_bottom, has_plants=False):
-        import cv2
         result = frame.copy()
         color = (0, 0, 255) if has_plants else (0, 255, 0)
         cv2.rectangle(result, (0, strip_top), (result.shape[1], strip_bottom), color, 2)

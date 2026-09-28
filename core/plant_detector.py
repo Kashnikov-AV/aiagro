@@ -195,9 +195,7 @@ class PlantDetector:
         index_gray = cv2.cvtColor(index_norm, cv2.COLOR_GRAY2RGB)
 
         font = cv2.FONT_HERSHEY_SIMPLEX
-        cv2.putText(index_gray, f"Min: {index_min:.3f}", (10, 25), font, 0.6, (0, 0, 0), 3)
-        cv2.putText(index_gray, f"Max: {index_max:.3f}", (10, 50), font, 0.6, (0, 0, 0), 3)
         cv2.putText(index_gray, f"Min: {index_min:.3f}", (10, 25), font, 0.6, (255, 255, 255), 2)
         cv2.putText(index_gray, f"Max: {index_max:.3f}", (10, 50), font, 0.6, (255, 255, 255), 2)
-
+        cv2.putText(index_gray, f"diff: {np.abs(index_max-index_min):.3f}", (10, 75), font, 0.6, (255, 255, 255), 2)
         return index_gray

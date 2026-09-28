@@ -29,7 +29,7 @@ class MainWindow(widgets.QMainWindow, Design):
 
         # Инициализация компонентов
         self.detector = PlantDetector(index_type='exg', downscale_factor=0.5)
-        self.valve_controller = ValveController(gpio_pin=7, valve_open_time=0.5, debug=True)
+        self.valve_controller = ValveController(gpio_pin=2, valve_open_time=0.5, debug=True)
         self.strip_detector = CentralStripDetector(strip_height_percent=0.3, min_plant_area=2000)
 
         # Настройка камеры
@@ -205,21 +205,20 @@ class MainWindow(widgets.QMainWindow, Design):
             original, index_map, bitmap, bboxes, plant_count = self.detector.process_frame(frame)
 
             # Получаем все контуры для проверки полосы
-            _, _, _, s_contours, m_contours, l_contours = self._get_plant_contours(frame)
-            all_contours = s_contours + m_contours + l_contours
+            _, _, _, _, _, l_contours = self._get_plant_contours(frame)
+            all_contours = l_contours
 
             plants_in_strip, strip_center, strip_bounds, plants_list = \
                 self.strip_detector.check_plants_in_strip(all_contours, original.shape)
 
             # Открываем клапан только для больших растений
-            large_plants = [p for p in plants_list if p['area'] > 2000]
-            if large_plants and not self.valve_controller.is_valve_open():
+            if plants_in_strip and not self.valve_controller.is_valve_open():
                 self.valve_controller.open_valve()
 
             if strip_bounds:
                 strip_top, strip_bottom = strip_bounds
                 bboxes = self.strip_detector.draw_central_strip(
-                    bboxes, strip_top, strip_bottom, len(large_plants) > 0
+                    bboxes, strip_top, strip_bottom, plants_in_strip
                 )
 
             self._update_label_batch([
@@ -230,7 +229,7 @@ class MainWindow(widgets.QMainWindow, Design):
             ])
 
             status = "ОТКРЫТ" if self.valve_controller.is_valve_open() else "ЗАКРЫТ"
-            print(f"Клапан: {status} | Больших растений: {len(large_plants)} | Всего: {plant_count}")
+            print(f"Клапан: {status} | Всего растений: {plant_count}")
 
         except Exception as e:
             print(f"Ошибка обработки кадра: {e}")
@@ -255,15 +254,13 @@ class MainWindow(widgets.QMainWindow, Design):
         binary = self.detector.apply_otsu(index, manual_threshold=128)
         bitmap = self.detector.morph_processing(binary)
 
-        s_contours, m_contours, l_contours = self.detector.detect_plants(bitmap, frame_small.shape[:2])
+        _, _, l_contours = self.detector.detect_plants(bitmap, frame_small.shape[:2])
 
         if self.detector.downscale_factor < 1.0:
             scale = 1.0 / self.detector.downscale_factor
-            s_contours = [(cnt * scale).astype(np.int32) for cnt in s_contours]
-            m_contours = [(cnt * scale).astype(np.int32) for cnt in m_contours]
             l_contours = [(cnt * scale).astype(np.int32) for cnt in l_contours]
 
-        return original_rgb, index, bitmap, s_contours, m_contours, l_contours
+        return original_rgb, index, bitmap, [], [], l_contours
 
     def _update_label_batch(self, label_frame_pairs):
         for label, frame in label_frame_pairs:
