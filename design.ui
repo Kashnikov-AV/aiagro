@@ -140,9 +140,6 @@
                                 color: white;
                                 border-radius: 30px;
                                 padding: 0px;
-                                text-align: center;
-                                qproperty-alignment: AlignVCenter;
-                                qproperty-wordWrap: true;
                                 }
                                 QPushButton:hover {
                                 background-color: rgb(253, 59, 0);

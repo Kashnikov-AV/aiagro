@@ -29,8 +29,8 @@ class MainWindow(widgets.QMainWindow, Design):
 
         # Инициализация компонентов
         self.detector = PlantDetector(index_type='exg', downscale_factor=0.5)
-        self.valve_controller = ValveController(gpio_pin=2, valve_open_time=0.5, debug=True)
-        self.strip_detector = CentralStripDetector(strip_height_percent=0.3, min_plant_area=2000)
+        self.valve_controller = ValveController(gpio_pin=2, valve_open_time=0.5, debug=False)
+        self.strip_detector = CentralStripDetector(strip_height_percent=0.1, min_plant_area=2000)
 
         # Настройка камеры
         self._setup_camera_thread()
@@ -202,7 +202,7 @@ class MainWindow(widgets.QMainWindow, Design):
             return
 
         try:
-            original, index_map, bitmap, bboxes, plant_count = self.detector.process_frame(frame)
+            original, index_map, bitmap, bboxes, plant_count = self.detector.process_frame(frame, only_large=True)
 
             # Получаем все контуры для проверки полосы
             _, _, _, _, _, l_contours = self._get_plant_contours(frame)

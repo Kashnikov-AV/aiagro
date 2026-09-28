@@ -112,8 +112,10 @@ class PlantDetector:
 
         return small_contours, medium_contours, large_contours
 
-    def process_frame(self, frame):
-        """обработка кадра"""
+    def process_frame(self, frame, only_large=False):
+        """обработка кадра
+        only_large: если True, рисует и считает только крупные растения
+        """
         # 1. Уменьшение разрешения для ускорения (сохраняем оригинал для отображения)
         original_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
 
@@ -154,11 +156,19 @@ class PlantDetector:
         # 8. Создание изображения с bounding boxes и количеством растений
         bboxes_img = original_rgb.copy()
         thickness = 2
-
-        colors = [(0, 255, 0), (255, 0, 0), (0, 0, 255)]  # S, M, L
         total_count = 0
 
-        for contours, color in zip([s_contours, m_contours, l_contours], colors):
+        # --- ЛОГИКА ВЫБОРА КОНТУРОВ ДЛЯ ОТРИСОВКИ ---
+        if only_large:
+            # Режим "только крупные": передаем в цикл только l_contours
+            draw_data = [(l_contours, (0, 0, 255))]  # Красный цвет
+        else:
+            # Обычный режим: рисуем все (S, M, L)
+            colors = [(0, 255, 0), (255, 0, 0), (0, 0, 255)]  # S, M, L
+            draw_data = zip([s_contours, m_contours, l_contours], colors)
+        # ---------------------------------------------
+
+        for contours, color in draw_data:
             for cnt in contours:
                 if isinstance(cnt, np.ndarray) and cnt.size > 0 and cnt.shape[0] > 0:
                     x, y, w, h = cv2.boundingRect(cnt)
