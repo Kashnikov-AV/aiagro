@@ -35,7 +35,7 @@ class CameraStream(QThread):
 
     def run(self):
         self._running = True
-        self._cap = cv2.VideoCapture(self.camera_index)
+        self._cap = cv2.VideoCapture(self.camera_index, cv2.CAP_V4L2)
 
         if not self._cap.isOpened():
             self._cap.release()

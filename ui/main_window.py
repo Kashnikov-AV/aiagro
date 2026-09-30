@@ -70,7 +70,7 @@ class MainWindow(widgets.QMainWindow, Design):
 
     def _setup_camera_thread(self):
         self.camera_thread = QThread()
-        self.camera_worker = CameraWorker()
+        self.camera_worker = CameraWorker(1)
         self.camera_worker.moveToThread(self.camera_thread)
 
         # Подключение сигналов
@@ -251,7 +251,7 @@ class MainWindow(widgets.QMainWindow, Design):
             frame_small = original_rgb
 
         index = self.detector.calculate_index(frame_small)
-        binary = self.detector.apply_otsu(index, manual_threshold=128)
+        binary = self.detector.apply_otsu(index, manual_threshold=220)
         bitmap = self.detector.morph_processing(binary)
 
         _, _, l_contours = self.detector.detect_plants(bitmap, frame_small.shape[:2])

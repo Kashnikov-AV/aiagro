@@ -78,7 +78,7 @@ class ValveController:
                     raise RuntimeError(f"wiringPiSetup({pin_mode}) вернул -1")
 
                 lib.pinMode(self.gpio_pin, OUTPUT)
-                lib.digitalWrite(self.gpio_pin, HIGH)   # закрыто
+                lib.digitalWrite(self.gpio_pin, LOW)   # закрыто
                 self.gpio_ready = True
                 print(f"GPIO {gpio_pin} ({pin_mode}) инициализирован")
             except Exception as e:
@@ -93,7 +93,7 @@ class ValveController:
             self.valve_open = True
 
             if self.gpio_ready:
-                lib.digitalWrite(self.gpio_pin, LOW)
+                lib.digitalWrite(self.gpio_pin, HIGH)
             print(f"КЛАПАН ОТКРЫТ на {self.valve_open_time} сек")
 
             t = threading.Thread(target=self._close_after_delay)
@@ -106,7 +106,7 @@ class ValveController:
         with self.valve_lock:
             self.valve_open = False
             if self.gpio_ready:
-                lib.digitalWrite(self.gpio_pin, HIGH)
+                lib.digitalWrite(self.gpio_pin, LOW)
             print("КЛАПАН ЗАКРЫТ")
 
     def is_valve_open(self):
@@ -114,7 +114,7 @@ class ValveController:
 
     def cleanup(self):
         if self.gpio_ready:
-            lib.digitalWrite(self.gpio_pin, HIGH)
+            lib.digitalWrite(self.gpio_pin, LOW)
             lib.pinMode(self.gpio_pin, INPUT)
 
 
